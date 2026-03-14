@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+from magi.config import AppConfig, ProviderConfig
+from magi.io import ensure_dir, write_text, write_yaml
+from magi.models import AdvisorResult, RunArtifacts
+from magi.prompts import build_mode_prompt, build_synthesis_report_prompt
+from magi.providers.base import Provider
+from magi.providers.external_cli import ExternalCLIProvider, run_text_prompt
+from magi.providers.mock import MockProvider
+from magi.synthesis import build_synthesis, render_report
+
+
+ProgressCallback = Callable[[str], None]
+
+
+def run_request(
+    config: AppConfig,
+    user_request: str,
+    mode: str = "ask",
+    selected_providers: set[str] | None = None,
+    synth_provider: str | None = None,
+    model_overrides: dict[str, str] | None = None,
+    effort_overrides: dict[str, str] | None = None,
+    progress: ProgressCallback | None = None,
+) -> RunArtifacts:
+    run_id = _new_run_id(config.runs_dir)
+    run_dir = config.runs_dir / run_id
+    ensure_dir(run_dir)
+    advisor_paths: list[Path] = []
+    model_overrides = model_overrides or {}
+    effort_overrides = effort_overrides or {}
+
+    _emit(progress, f"[{mode} 1/6] normalizing request")
+    write_yaml(
+        run_dir / "request.yaml",
+        {
+            "run_id": run_id,
+            "mode": mode,
+            "project_name": config.project_name,
+            "project_root": str(config.project_root),
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "user_request": user_request,
+            "selected_providers": sorted(selected_providers) if selected_providers else [],
+            "synth_provider": synth_provider or "",
+            "model_overrides": model_overrides,
+            "effort_overrides": effort_overrides,
+        },
+    )
+
+    prompt = build_mode_prompt(mode, user_request, config.project_name, config.project_root)
+    providers = [
+        item
+        for item in config.providers
+        if item.enabled and (not selected_providers or item.name in selected_providers)
+    ]
+    results: list[AdvisorResult] = []
+
+    for index, provider_config in enumerate(providers, start=2):
+        for warning in _command_template_warnings(
+            provider_config,
+            model_overrides.get(provider_config.name, ""),
+            effort_overrides.get(provider_config.name, ""),
+        ):
+            _emit(progress, f"[warn] {warning}")
+        _emit(progress, f"[{mode} {index}/6] consulting {provider_config.name}")
+        provider = build_provider(provider_config)
+        result = provider.ask(
+            prompt,
+            model=model_overrides.get(provider_config.name, ""),
+            effort=effort_overrides.get(provider_config.name, ""),
+        )
+        results.append(result)
+        advisor_path = run_dir / f"advisor_{provider_config.name}.yaml"
+        advisor_paths.append(advisor_path)
+        write_yaml(advisor_path, result.as_dict())
+
+    _emit(progress, f"[{mode} 5/6] synthesizing responses")
+    synthesis = build_synthesis(results, user_request)
+    synthesis["mode"] = mode
+    synthesis["selected_providers"] = sorted(selected_providers) if selected_providers else []
+    synthesis["synth_provider"] = synth_provider or ""
+    synthesis["model_overrides"] = model_overrides
+    synthesis["effort_overrides"] = effort_overrides
+    synthesis_path = run_dir / "synthesis.yaml"
+    write_yaml(synthesis_path, synthesis)
+
+    _emit(progress, f"[{mode} 6/6] writing report")
+    report_path = run_dir / "report.md"
+    synthesizer_path = run_dir / "synthesizer.yaml" if synth_provider else None
+    report_text = _build_report_text(
+        config,
+        run_id,
+        mode,
+        user_request,
+        results,
+        synthesis,
+        synth_provider,
+        model_overrides,
+        effort_overrides,
+        synthesizer_path,
+        progress,
+    )
+    write_text(report_path, report_text)
+
+    return RunArtifacts(
+        run_id=run_id,
+        run_dir=run_dir,
+        request_path=run_dir / "request.yaml",
+        report_path=report_path,
+        synthesis_path=synthesis_path,
+        advisor_paths=advisor_paths,
+        synthesizer_path=synthesizer_path if synth_provider else None,
+    )
+
+
+def build_provider(config: ProviderConfig) -> Provider:
+    if config.type == "cli":
+        return ExternalCLIProvider(config)
+    return MockProvider(config.name)
+
+
+def _new_run_id(runs_dir: Path) -> str:
+    ensure_dir(runs_dir)
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    suffix = 1
+    while True:
+        candidate = f"{stamp}-{suffix:03d}"
+        if not (runs_dir / candidate).exists():
+            return candidate
+        suffix += 1
+
+
+def _emit(progress: ProgressCallback | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def _command_template_warnings(
+    config: ProviderConfig,
+    model_override: str,
+    effort_override: str,
+) -> list[str]:
+    if config.type != "cli" or not config.command:
+        return []
+
+    template = " ".join(config.command)
+    warnings: list[str] = []
+
+    if model_override and "{model}" not in template:
+        warnings.append(
+            f"{config.name}: command template does not include {{model}}; model selection will not be passed to the CLI."
+        )
+    if effort_override and "{effort}" not in template:
+        warnings.append(
+            f"{config.name}: command template does not include {{effort}}; effort selection will not be passed to the CLI."
+        )
+
+    return warnings
+
+
+def _build_report_text(
+    config: AppConfig,
+    run_id: str,
+    mode: str,
+    user_request: str,
+    results: list[AdvisorResult],
+    synthesis: dict[str, object],
+    synth_provider: str | None,
+    model_overrides: dict[str, str],
+    effort_overrides: dict[str, str],
+    synthesizer_path: Path | None,
+    progress: ProgressCallback | None,
+) -> str:
+    if not synth_provider:
+        return render_report(run_id, synthesis, results)
+
+    provider_config = _find_provider_config(config, synth_provider)
+    if provider_config is None:
+        synthesis["synth_error"] = f"Unknown synthesizer provider: {synth_provider}"
+        return render_report(run_id, synthesis, results)
+
+    if provider_config.name not in {result.provider for result in results if result.ok}:
+        synthesis["synth_error"] = f"Synthesizer provider was not active in this run: {synth_provider}"
+        return render_report(run_id, synthesis, results)
+
+    if provider_config.type != "cli":
+        synthesis["synth_note"] = f"{synth_provider} selected as synthesizer, but provider type is {provider_config.type}; using heuristic report."
+        return render_report(run_id, synthesis, results)
+
+    _emit(progress, f"[{mode}] requesting final synthesis from {synth_provider}")
+    synth_prompt = build_synthesis_report_prompt(
+        user_request,
+        mode,
+        config.project_name,
+        config.project_root,
+        [result.as_dict() for result in results],
+        synthesis,
+    )
+    command_result = run_text_prompt(
+        provider_config,
+        synth_prompt,
+        model=model_overrides.get(synth_provider, ""),
+        effort=effort_overrides.get(synth_provider, ""),
+    )
+    if synthesizer_path is not None:
+        write_yaml(
+            synthesizer_path,
+            {
+                "provider": synth_provider,
+                "ok": command_result.ok,
+                "command": command_result.command,
+                "duration_seconds": round(command_result.duration_seconds, 3),
+                "error": command_result.stderr,
+                "output": command_result.stdout,
+            },
+        )
+
+    if not command_result.ok or not command_result.stdout.strip():
+        synthesis["synth_error"] = command_result.stderr or "Synthesizer returned no output."
+        return render_report(run_id, synthesis, results)
+
+    return _wrap_synthesized_report(run_id, mode, synthesis, synth_provider, command_result.stdout)
+
+
+def _wrap_synthesized_report(
+    run_id: str,
+    mode: str,
+    synthesis: dict[str, object],
+    synth_provider: str,
+    markdown: str,
+) -> str:
+    lines = [
+        "# MAGI Report",
+        "",
+        f"- run_id: `{run_id}`",
+        f"- mode: `{mode}`",
+        f"- synthesizer: `{synth_provider}`",
+        f"- successful_providers: {', '.join(synthesis['successful_providers']) or 'none'}",
+        "",
+        markdown.strip(),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _find_provider_config(config: AppConfig, provider_name: str) -> ProviderConfig | None:
+    for provider in config.providers:
+        if provider.name == provider_name:
+            return provider
+    return None

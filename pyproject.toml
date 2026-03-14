@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magi"
+version = "0.1.0"
+description = "A lightweight multi-model advisory orchestrator for local CLI subscriptions."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "takik" }
+]
+dependencies = [
+  "prompt_toolkit>=3.0.43",
+]
+
+[project.scripts]
+magi = "magi.cli:main"
+
+[tool.setuptools]
+packages = ["magi", "magi.providers"]
