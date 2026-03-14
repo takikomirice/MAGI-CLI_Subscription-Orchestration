@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Callable
 
@@ -152,11 +153,23 @@ def _refresh_provider_catalog(
         )
 
     command = [part.format(provider=provider.name) for part in provider.model_discovery_command]
+    resolved_executable = shutil.which(command[0]) if command else None
+    if not command or resolved_executable is None:
+        return ModelCatalogRefreshResult(
+            provider=provider.name,
+            ok=False,
+            refreshed=False,
+            models=list(provider.model_options),
+            message=f"executable not found on PATH: {command[0] if command else ''}",
+        )
+    command[0] = resolved_executable
     try:
         completed = subprocess.run(
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=provider.model_discovery_timeout_seconds,
             check=False,
         )

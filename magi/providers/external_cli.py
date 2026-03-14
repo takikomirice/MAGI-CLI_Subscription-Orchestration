@@ -89,10 +89,11 @@ def run_text_prompt(
         for part in config.command
     ]
     executable = command[0] if command else ""
+    resolved_executable = shutil.which(executable) if executable else None
 
     if not command:
         return CommandRunResult(command=[], ok=False, stdout="", stderr="No command configured.", duration_seconds=0.0)
-    if shutil.which(executable) is None:
+    if resolved_executable is None:
         return CommandRunResult(
             command=command,
             ok=False,
@@ -100,6 +101,7 @@ def run_text_prompt(
             stderr=f"Executable not found on PATH: {executable}",
             duration_seconds=time.perf_counter() - start,
         )
+    command[0] = resolved_executable
 
     try:
         completed = subprocess.run(
@@ -107,6 +109,8 @@ def run_text_prompt(
             input=prompt if config.stdin_prompt else None,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=config.timeout_seconds,
             check=False,
         )
@@ -158,7 +162,7 @@ def _parse_payload(stdout: str) -> AdvisorPayload:
         recommended_next_steps=[
             str(item) for item in raw.get("recommended_next_steps", [])
         ],
-        confidence=int(raw.get("confidence", 0)),
+        confidence=_normalize_confidence(raw.get("confidence", 0)),
         raw_output=stdout,
     )
 
@@ -179,3 +183,14 @@ def _fallback_payload(stdout: str) -> AdvisorPayload:
         confidence=40 if stdout else 0,
         raw_output=stdout,
     )
+
+
+def _normalize_confidence(value: object) -> int:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0
+
+    if 0.0 <= numeric <= 1.0:
+        numeric *= 100
+    return max(0, min(100, round(numeric)))
