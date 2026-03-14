@@ -169,6 +169,14 @@ default_model = "gpt-5.4"
 default_effort = "high"
 ```
 
+同梱している discovery helper:
+
+- `scripts/list_codex_models.py`
+- `scripts/list_claude_models.py`
+- `scripts/list_gemini_models.py`
+
+`claude` はインストール済みの公式 Claude Code bundle から、`gemini` はインストール済みの Gemini CLI core 定数から取得します。`codex` は現時点で公式CLIに公開の model list コマンドが無いため、curated fallback を使います。
+
 使い方:
 
 ```powershell
@@ -233,10 +241,9 @@ runs_dir = "runs"
 type = "cli"
 enabled = true
 command = ["codex", "exec", "{prompt}"]
-# Optional: print one model ID per line from your own discovery script/command.
-# model_discovery_command = ["python", "scripts/list_codex_models.py"]
-# model_discovery_ttl_hours = 24
-# model_discovery_timeout_seconds = 15
+model_discovery_command = ["python", "scripts/list_codex_models.py"]
+model_discovery_ttl_hours = 24
+model_discovery_timeout_seconds = 15
 # model_discovery_regex = "(gpt-[A-Za-z0-9.-]+)"
 default_model = "gpt-5.4"
 model_options = ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"]
@@ -247,8 +254,11 @@ effort_options = ["default", "low", "medium", "high", "xhigh"]
 type = "cli"
 enabled = true
 command = ["claude", "-p", "--model", "{model}", "--effort", "{effort}", "{prompt}"]
+model_discovery_command = ["python", "scripts/list_claude_models.py"]
+model_discovery_ttl_hours = 24
+model_discovery_timeout_seconds = 15
 default_model = "claude-sonnet-4-6"
-model_options = ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]
+model_options = ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-1"]
 default_effort = "default"
 effort_options = ["default", "low", "medium", "high"]
 
@@ -256,8 +266,11 @@ effort_options = ["default", "low", "medium", "high"]
 type = "cli"
 enabled = true
 command = ["gemini", "-m", "{model}", "-p", "{prompt}"]
+model_discovery_command = ["python", "scripts/list_gemini_models.py"]
+model_discovery_ttl_hours = 24
+model_discovery_timeout_seconds = 15
 default_model = "gemini-3.1-pro-preview"
-model_options = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+model_options = ["gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
 default_effort = "default"
 effort_options = ["default", "low", "medium", "high"]
 ```
