@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -141,9 +142,8 @@ def run_text_prompt(
 
 
 def _parse_payload(stdout: str) -> AdvisorPayload:
-    try:
-        raw = json.loads(stdout)
-    except json.JSONDecodeError:
+    raw = _load_json_payload(stdout)
+    if raw is None:
         return _fallback_payload(stdout)
 
     return AdvisorPayload(
@@ -165,6 +165,47 @@ def _parse_payload(stdout: str) -> AdvisorPayload:
         confidence=_normalize_confidence(raw.get("confidence", 0)),
         raw_output=stdout,
     )
+
+
+def _load_json_payload(stdout: str) -> dict[str, object] | None:
+    candidates = [stdout.strip()]
+
+    fenced = _strip_code_fence(stdout)
+    if fenced and fenced not in candidates:
+        candidates.append(fenced)
+
+    extracted = _extract_braced_json(stdout)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+
+    if fenced:
+        extracted_fenced = _extract_braced_json(fenced)
+        if extracted_fenced and extracted_fenced not in candidates:
+            candidates.append(extracted_fenced)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _strip_code_fence(text: str) -> str:
+    match = re.match(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else text.strip()
+
+
+def _extract_braced_json(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return ""
+    return text[start : end + 1].strip()
 
 
 def _fallback_payload(stdout: str) -> AdvisorPayload:

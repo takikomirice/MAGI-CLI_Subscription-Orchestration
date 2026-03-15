@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import Callable
 
 from magi.config import AppConfig, ProviderConfig
 from magi.io import ensure_dir, write_text, write_yaml
-from magi.models import AdvisorResult, RunArtifacts
+from magi.models import AdvisorPayload, AdvisorResult, RunArtifacts
 from magi.prompts import build_mode_prompt, build_synthesis_report_prompt
 from magi.providers.base import Provider
 from magi.providers.external_cli import ExternalCLIProvider, run_text_prompt
@@ -57,26 +59,15 @@ def run_request(
         for item in config.providers
         if item.enabled and (not selected_providers or item.name in selected_providers)
     ]
-    results: list[AdvisorResult] = []
-
-    for index, provider_config in enumerate(providers, start=2):
-        for warning in _command_template_warnings(
-            provider_config,
-            model_overrides.get(provider_config.name, ""),
-            effort_overrides.get(provider_config.name, ""),
-        ):
-            _emit(progress, f"[warn] {warning}")
-        _emit(progress, f"[{mode} {index}/6] consulting {provider_config.name}")
-        provider = build_provider(provider_config)
-        result = provider.ask(
-            prompt,
-            model=model_overrides.get(provider_config.name, ""),
-            effort=effort_overrides.get(provider_config.name, ""),
-        )
-        results.append(result)
-        advisor_path = run_dir / f"advisor_{provider_config.name}.yaml"
-        advisor_paths.append(advisor_path)
-        write_yaml(advisor_path, result.as_dict())
+    results, advisor_paths = _consult_providers(
+        providers,
+        prompt,
+        mode,
+        run_dir,
+        model_overrides,
+        effort_overrides,
+        progress,
+    )
 
     _emit(progress, f"[{mode} 5/6] synthesizing responses")
     synthesis = build_synthesis(results, user_request)
@@ -121,6 +112,96 @@ def build_provider(config: ProviderConfig) -> Provider:
     if config.type == "cli":
         return ExternalCLIProvider(config)
     return MockProvider(config.name)
+
+
+def _consult_providers(
+    providers: list[ProviderConfig],
+    prompt: str,
+    mode: str,
+    run_dir: Path,
+    model_overrides: dict[str, str],
+    effort_overrides: dict[str, str],
+    progress: ProgressCallback | None,
+) -> tuple[list[AdvisorResult], list[Path]]:
+    if not providers:
+        return [], []
+
+    results_by_provider: dict[str, AdvisorResult] = {}
+    advisor_paths_by_provider: dict[str, Path] = {}
+
+    with ThreadPoolExecutor(max_workers=len(providers), thread_name_prefix="magi-provider") as executor:
+        futures = {}
+        for index, provider_config in enumerate(providers, start=2):
+            for warning in _command_template_warnings(
+                provider_config,
+                model_overrides.get(provider_config.name, ""),
+                effort_overrides.get(provider_config.name, ""),
+            ):
+                _emit(progress, f"[warn] {warning}")
+            _emit(progress, f"[{mode} {index}/6] consulting {provider_config.name}")
+            future = executor.submit(
+                _run_provider_request,
+                provider_config,
+                prompt,
+                model_overrides.get(provider_config.name, ""),
+                effort_overrides.get(provider_config.name, ""),
+            )
+            futures[future] = provider_config
+
+        for future in as_completed(futures):
+            provider_config = futures[future]
+            result = future.result()
+            advisor_path = run_dir / f"advisor_{provider_config.name}.yaml"
+            results_by_provider[provider_config.name] = result
+            advisor_paths_by_provider[provider_config.name] = advisor_path
+            write_yaml(advisor_path, result.as_dict())
+            _emit(progress, f"[{mode}] completed {provider_config.name}")
+
+    results = [results_by_provider[provider.name] for provider in providers]
+    advisor_paths = [advisor_paths_by_provider[provider.name] for provider in providers]
+    return results, advisor_paths
+
+
+def _run_provider_request(
+    provider_config: ProviderConfig,
+    prompt: str,
+    model: str,
+    effort: str,
+) -> AdvisorResult:
+    start = time.perf_counter()
+    try:
+        provider = build_provider(provider_config)
+        return provider.ask(prompt, model=model, effort=effort)
+    except Exception as exc:
+        return _provider_exception_result(
+            provider_config.name,
+            prompt,
+            time.perf_counter() - start,
+            str(exc),
+        )
+
+
+def _provider_exception_result(
+    provider_name: str,
+    prompt: str,
+    duration_seconds: float,
+    message: str,
+) -> AdvisorResult:
+    payload = AdvisorPayload(
+        summary="Provider execution failed unexpectedly.",
+        risks=[message],
+        unknowns=["Review the provider logs or command output for the failing advisor."],
+        recommended_next_steps=["Fix the provider failure and rerun the request."],
+        confidence=0,
+    )
+    return AdvisorResult(
+        provider=provider_name,
+        payload=payload,
+        prompt=prompt,
+        duration_seconds=duration_seconds,
+        ok=False,
+        error=message,
+    )
 
 
 def _new_run_id(runs_dir: Path) -> str:

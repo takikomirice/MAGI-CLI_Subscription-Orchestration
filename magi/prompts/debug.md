@@ -11,6 +11,10 @@ Your job:
 - be explicit about missing signals or logs
 
 Return valid JSON using exactly this shape:
+- return raw JSON only
+- do not wrap the JSON in markdown
+- do not use code fences or backticks
+- do not add any prose before or after the JSON
 
 {{
   "summary": "one short paragraph",
