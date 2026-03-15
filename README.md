@@ -35,6 +35,7 @@ This makes it useful for:
 - provider, model, and effort switching from `/model`
 - model catalog refresh via `magi models` or `/models`
 - run cleanup with `/clean` or `magi clean`
+- best-effort `Esc` cancellation for an active run
 - quota/status placeholders for each provider
 
 ## Quick Start
@@ -63,6 +64,7 @@ python -m magi
 ```
 
 If `prompt_toolkit` is available and you are in a real terminal, MAGI uses command history and line editing similar to other modern CLIs.
+While a run is active, pressing `Esc` stops the in-flight provider processes.
 
 MAGI keeps the current mode until you switch it.
 
@@ -141,6 +143,7 @@ Runs accumulate under `runs/`. Use `clean` to remove older history.
 ```powershell
 magi clean 20
 magi clean all
+magi clean all --history
 ```
 
 Inside the shell:
@@ -148,7 +151,10 @@ Inside the shell:
 ```text
 /clean 20
 /clean all
+/clean all --history
 ```
+
+Add `--history` to remove `.magi_history` as well.
 
 ## Model Catalog Refresh
 

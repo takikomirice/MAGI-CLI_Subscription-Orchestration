@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from magi.cancellation import RunCancellation
 from magi.models import AdvisorPayload, AdvisorResult
 from magi.providers.base import Provider
 
@@ -10,8 +11,30 @@ class MockProvider(Provider):
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def ask(self, prompt: str, model: str = "", effort: str = "") -> AdvisorResult:
+    def ask(
+        self,
+        prompt: str,
+        model: str = "",
+        effort: str = "",
+        cancellation: RunCancellation | None = None,
+    ) -> AdvisorResult:
         start = time.perf_counter()
+        if cancellation is not None and cancellation.is_cancelled():
+            return AdvisorResult(
+                provider=self.name,
+                payload=AdvisorPayload(
+                    summary="Provider execution cancelled.",
+                    risks=[cancellation.reason],
+                    unknowns=["The mock provider did not produce a response because the run was cancelled."],
+                    recommended_next_steps=["Retry the request when you are ready to continue."],
+                    confidence=0,
+                ),
+                prompt=prompt,
+                duration_seconds=time.perf_counter() - start,
+                command=["mock"],
+                ok=False,
+                error=cancellation.reason,
+            )
         mode = self._extract_mode(prompt)
         snippet = prompt.strip().splitlines()[-1][:80]
         suffix_parts = []

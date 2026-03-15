@@ -7,6 +7,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from magi.cancellation import RunCancellation, terminate_process_tree
 from magi.config import ProviderConfig
 from magi.models import AdvisorPayload, AdvisorResult
 from magi.providers.base import Provider
@@ -19,16 +20,30 @@ class CommandRunResult:
     stdout: str
     stderr: str
     duration_seconds: float
+    cancelled: bool = False
 
 
 class ExternalCLIProvider(Provider):
     def __init__(self, config: ProviderConfig) -> None:
         self.config = config
 
-    def ask(self, prompt: str, model: str = "", effort: str = "") -> AdvisorResult:
-        result = run_text_prompt(self.config, prompt, model=model, effort=effort)
+    def ask(
+        self,
+        prompt: str,
+        model: str = "",
+        effort: str = "",
+        cancellation: RunCancellation | None = None,
+    ) -> AdvisorResult:
+        result = run_text_prompt(self.config, prompt, model=model, effort=effort, cancellation=cancellation)
         if not result.command:
             return self._error_result(prompt, [], "No command configured.", result.duration_seconds)
+        if result.cancelled:
+            return self._cancelled_result(
+                prompt,
+                result.command,
+                result.stderr or "Provider execution cancelled.",
+                result.duration_seconds,
+            )
         if not result.ok:
             return self._error_result(
                 prompt,
@@ -47,6 +62,30 @@ class ExternalCLIProvider(Provider):
             command=result.command,
             ok=True,
             error=result.stderr,
+        )
+
+    def _cancelled_result(
+        self,
+        prompt: str,
+        command: list[str],
+        message: str,
+        duration_seconds: float,
+    ) -> AdvisorResult:
+        payload = AdvisorPayload(
+            summary="Provider execution cancelled.",
+            risks=[message],
+            unknowns=["The advisor did not complete because the MAGI run was cancelled."],
+            recommended_next_steps=["Retry the request when you want to continue."],
+            confidence=0,
+        )
+        return AdvisorResult(
+            provider=self.config.name,
+            payload=payload,
+            prompt=prompt,
+            duration_seconds=duration_seconds,
+            command=command,
+            ok=False,
+            error=message,
         )
 
     def _error_result(
@@ -81,6 +120,7 @@ def run_text_prompt(
     prompt: str,
     model: str = "",
     effort: str = "",
+    cancellation: RunCancellation | None = None,
 ) -> CommandRunResult:
     start = time.perf_counter()
     resolved_model = model or config.default_model
@@ -103,18 +143,69 @@ def run_text_prompt(
             duration_seconds=time.perf_counter() - start,
         )
     command[0] = resolved_executable
+    if cancellation is not None and cancellation.is_cancelled():
+        return CommandRunResult(
+            command=command,
+            ok=False,
+            stdout="",
+            stderr=cancellation.reason,
+            duration_seconds=time.perf_counter() - start,
+            cancelled=True,
+        )
 
+    process: subprocess.Popen[str] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            input=prompt if config.stdin_prompt else None,
-            capture_output=True,
+            stdin=subprocess.PIPE if config.stdin_prompt else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=config.timeout_seconds,
-            check=False,
         )
+        if cancellation is not None and not cancellation.register_process(process):
+            stdout, stderr = _collect_output_after_cancel(process)
+            return CommandRunResult(
+                command=command,
+                ok=False,
+                stdout=stdout,
+                stderr=cancellation.reason,
+                duration_seconds=time.perf_counter() - start,
+                cancelled=True,
+            )
+        if config.stdin_prompt and process.stdin is not None:
+            process.stdin.write(prompt)
+            process.stdin.close()
+        deadline = start + config.timeout_seconds
+        while True:
+            if cancellation is not None and cancellation.is_cancelled():
+                stdout, stderr = _cancel_running_process(process, cancellation.reason)
+                return CommandRunResult(
+                    command=command,
+                    ok=False,
+                    stdout=stdout,
+                    stderr=cancellation.reason or stderr,
+                    duration_seconds=time.perf_counter() - start,
+                    cancelled=True,
+                )
+            try:
+                stdout, stderr = process.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                if time.perf_counter() >= deadline:
+                    stdout, stderr = _cancel_running_process(
+                        process,
+                        f"Timed out after {config.timeout_seconds} seconds.",
+                    )
+                    return CommandRunResult(
+                        command=command,
+                        ok=False,
+                        stdout=stdout,
+                        stderr=f"Timed out after {config.timeout_seconds} seconds.",
+                        duration_seconds=time.perf_counter() - start,
+                    )
+                continue
     except OSError as exc:
         return CommandRunResult(
             command=command,
@@ -123,22 +214,37 @@ def run_text_prompt(
             stderr=str(exc),
             duration_seconds=time.perf_counter() - start,
         )
-    except subprocess.TimeoutExpired:
-        return CommandRunResult(
-            command=command,
-            ok=False,
-            stdout="",
-            stderr=f"Timed out after {config.timeout_seconds} seconds.",
-            duration_seconds=time.perf_counter() - start,
-        )
+    finally:
+        if cancellation is not None:
+            cancellation.unregister_process(process)
 
     return CommandRunResult(
         command=command,
-        ok=completed.returncode == 0,
-        stdout=(completed.stdout or "").strip(),
-        stderr=(completed.stderr or "").strip() or ("" if completed.returncode == 0 else f"Provider exited with code {completed.returncode}."),
+        ok=process.returncode == 0,
+        stdout=(stdout or "").strip(),
+        stderr=(stderr or "").strip() or ("" if process.returncode == 0 else f"Provider exited with code {process.returncode}."),
         duration_seconds=time.perf_counter() - start,
     )
+
+
+def _cancel_running_process(process: subprocess.Popen[str], message: str) -> tuple[str, str]:
+    process.poll()
+    if process.returncode is None:
+        terminate_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+            return stdout, stderr
+        except subprocess.TimeoutExpired:
+            pass
+    return _collect_output_after_cancel(process)
+
+
+def _collect_output_after_cancel(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        stdout, stderr = process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        stdout, stderr = "", ""
+    return stdout, stderr
 
 
 def _parse_payload(stdout: str) -> AdvisorPayload:

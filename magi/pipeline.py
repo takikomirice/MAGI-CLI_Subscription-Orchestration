@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 from typing import Callable
 
+from magi.cancellation import RunCancellation
 from magi.config import AppConfig, ProviderConfig
 from magi.io import ensure_dir, write_text, write_yaml
 from magi.models import AdvisorPayload, AdvisorResult, RunArtifacts
@@ -28,6 +29,7 @@ def run_request(
     model_overrides: dict[str, str] | None = None,
     effort_overrides: dict[str, str] | None = None,
     progress: ProgressCallback | None = None,
+    cancellation: RunCancellation | None = None,
 ) -> RunArtifacts:
     run_id = _new_run_id(config.runs_dir)
     run_dir = config.runs_dir / run_id
@@ -67,6 +69,7 @@ def run_request(
         model_overrides,
         effort_overrides,
         progress,
+        cancellation,
     )
 
     _emit(progress, f"[{mode} 5/6] synthesizing responses")
@@ -94,6 +97,7 @@ def run_request(
         effort_overrides,
         synthesizer_path,
         progress,
+        cancellation,
     )
     write_text(report_path, report_text)
 
@@ -122,6 +126,7 @@ def _consult_providers(
     model_overrides: dict[str, str],
     effort_overrides: dict[str, str],
     progress: ProgressCallback | None,
+    cancellation: RunCancellation | None,
 ) -> tuple[list[AdvisorResult], list[Path]]:
     if not providers:
         return [], []
@@ -145,6 +150,7 @@ def _consult_providers(
                 prompt,
                 model_overrides.get(provider_config.name, ""),
                 effort_overrides.get(provider_config.name, ""),
+                cancellation,
             )
             futures[future] = provider_config
 
@@ -155,7 +161,8 @@ def _consult_providers(
             results_by_provider[provider_config.name] = result
             advisor_paths_by_provider[provider_config.name] = advisor_path
             write_yaml(advisor_path, result.as_dict())
-            _emit(progress, f"[{mode}] completed {provider_config.name}")
+            status = "completed" if result.ok else "cancelled" if cancellation is not None and result.error == cancellation.reason else "failed"
+            _emit(progress, f"[{mode}] {status} {provider_config.name}")
 
     results = [results_by_provider[provider.name] for provider in providers]
     advisor_paths = [advisor_paths_by_provider[provider.name] for provider in providers]
@@ -167,11 +174,12 @@ def _run_provider_request(
     prompt: str,
     model: str,
     effort: str,
+    cancellation: RunCancellation | None,
 ) -> AdvisorResult:
     start = time.perf_counter()
     try:
         provider = build_provider(provider_config)
-        return provider.ask(prompt, model=model, effort=effort)
+        return provider.ask(prompt, model=model, effort=effort, cancellation=cancellation)
     except Exception as exc:
         return _provider_exception_result(
             provider_config.name,
@@ -255,7 +263,12 @@ def _build_report_text(
     effort_overrides: dict[str, str],
     synthesizer_path: Path | None,
     progress: ProgressCallback | None,
+    cancellation: RunCancellation | None,
 ) -> str:
+    if cancellation is not None and cancellation.is_cancelled():
+        synthesis["synth_error"] = cancellation.reason
+        return render_report(run_id, synthesis, results)
+
     if not synth_provider:
         return render_report(run_id, synthesis, results)
 
@@ -286,6 +299,7 @@ def _build_report_text(
         synth_prompt,
         model=model_overrides.get(synth_provider, ""),
         effort=effort_overrides.get(synth_provider, ""),
+        cancellation=cancellation,
     )
     if synthesizer_path is not None:
         write_yaml(
@@ -299,6 +313,10 @@ def _build_report_text(
                 "output": command_result.stdout,
             },
         )
+
+    if command_result.cancelled:
+        synthesis["synth_error"] = command_result.stderr or (cancellation.reason if cancellation else "Cancelled by user.")
+        return render_report(run_id, synthesis, results)
 
     if not command_result.ok or not command_result.stdout.strip():
         synthesis["synth_error"] = command_result.stderr or "Synthesizer returned no output."

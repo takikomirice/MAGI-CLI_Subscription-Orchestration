@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import threading
+import time
 
+from magi.cancellation import RunCancellation, remove_history_file
 from magi.config import AppConfig, load_config
 from magi.model_catalog import (
     auto_refresh_model_catalogs,
@@ -24,6 +27,11 @@ except ImportError:
     AutoSuggestFromHistory = None
     NestedCompleter = None
     FileHistory = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 
 MODES = ("ask", "plan", "debug", "agent")
@@ -102,16 +110,22 @@ def main(argv: list[str] | None = None) -> int:
     model_overrides = _parse_assignment_overrides(args.models)
     effort_overrides = _parse_assignment_overrides(args.efforts)
     prompt = " ".join(args.prompt).strip()
-    artifacts = run_request(
-        config,
-        prompt,
-        mode=args.mode,
-        selected_providers=selected,
-        synth_provider=synth_provider,
-        model_overrides=model_overrides,
-        effort_overrides=effort_overrides,
-        progress=print,
-    )
+    cancellation = RunCancellation()
+    stop_monitor = _start_escape_cancel_monitor(cancellation)
+    try:
+        artifacts = run_request(
+            config,
+            prompt,
+            mode=args.mode,
+            selected_providers=selected,
+            synth_provider=synth_provider,
+            model_overrides=model_overrides,
+            effort_overrides=effort_overrides,
+            progress=print,
+            cancellation=cancellation,
+        )
+    finally:
+        stop_monitor()
     print(f"[done] report: {artifacts.report_path}")
     _print_report(artifacts.report_path)
     return 0
@@ -286,16 +300,22 @@ def _run_and_report(
     if selected_providers is not None and not selected_providers:
         print("No active providers. Open /model and enable at least one provider.")
         return
-    artifacts = run_request(
-        config,
-        prompt,
-        mode=mode,
-        selected_providers=selected_providers,
-        synth_provider=synth_provider,
-        model_overrides=model_overrides,
-        effort_overrides=effort_overrides,
-        progress=print,
-    )
+    cancellation = RunCancellation()
+    stop_monitor = _start_escape_cancel_monitor(cancellation)
+    try:
+        artifacts = run_request(
+            config,
+            prompt,
+            mode=mode,
+            selected_providers=selected_providers,
+            synth_provider=synth_provider,
+            model_overrides=model_overrides,
+            effort_overrides=effort_overrides,
+            progress=print,
+            cancellation=cancellation,
+        )
+    finally:
+        stop_monitor()
     print(f"[done] report: {artifacts.report_path}")
     _print_report(artifacts.report_path)
 
@@ -325,10 +345,11 @@ def _show_last(project_root: Path) -> int:
 def _clean_command(project_root: Path, argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="magi clean", add_help=True)
     parser.add_argument("target", nargs="?", default="20", help="Keep count or 'all'.")
+    parser.add_argument("--history", action="store_true", help="Also remove the .magi_history file.")
     parser.add_argument("--project-root", default=str(project_root), help="Project root containing optional .magi.toml.")
     args = parser.parse_args(argv)
     config = load_config(Path(args.project_root).resolve())
-    _clean_runs_for_config(config, args.target)
+    _clean_runs_for_config(config, args.target, remove_history=args.history)
     return 0
 
 
@@ -346,18 +367,67 @@ def _models_command(project_root: Path, argv: list[str]) -> int:
     return 0
 
 
-def _clean_runs_for_config(config: AppConfig, target: str) -> None:
-    if target == "all":
+def _clean_runs_for_config(config: AppConfig, target: str, remove_history: bool = False) -> None:
+    parsed_target, parsed_remove_history = _parse_clean_target(target)
+    remove_history = remove_history or parsed_remove_history
+
+    if parsed_target == "all":
         removed_count, _removed = clean_runs(config.runs_dir, remove_all=True)
-        print(f"cleaned {removed_count} run(s) from {config.runs_dir}")
+        history_suffix = _clean_history_suffix(config, remove_history)
+        print(f"cleaned {removed_count} run(s) from {config.runs_dir}{history_suffix}")
         return
     try:
-        keep = int(target or "20")
+        keep = int(parsed_target or "20")
     except ValueError:
-        print("Usage: /clean [all|N]")
+        print("Usage: /clean [all|N] [--history]")
         return
     removed_count, _removed = clean_runs(config.runs_dir, keep=keep)
-    print(f"cleaned {removed_count} run(s); kept latest {keep}")
+    history_suffix = _clean_history_suffix(config, remove_history)
+    print(f"cleaned {removed_count} run(s); kept latest {keep}{history_suffix}")
+
+
+def _parse_clean_target(target: str) -> tuple[str, bool]:
+    parts = [item.strip() for item in target.split() if item.strip()]
+    remove_history = False
+    filtered: list[str] = []
+    for item in parts:
+        if item in {"history", "--history"}:
+            remove_history = True
+            continue
+        filtered.append(item)
+    return (filtered[0] if filtered else "20"), remove_history
+
+
+def _clean_history_suffix(config: AppConfig, remove_history: bool) -> str:
+    if not remove_history:
+        return ""
+    removed = remove_history_file(config.project_root)
+    return " and removed .magi_history" if removed else " and left .magi_history unchanged"
+
+
+def _start_escape_cancel_monitor(cancellation: RunCancellation):
+    if msvcrt is None or not sys.stdin or not sys.stdin.isatty():
+        return lambda: None
+
+    stop_event = threading.Event()
+
+    def _monitor() -> None:
+        while not stop_event.is_set() and not cancellation.is_cancelled():
+            if msvcrt.kbhit():
+                key = msvcrt.getwch()
+                if key == "\x1b" and cancellation.cancel():
+                    print("[cancel] escape pressed; stopping active providers...")
+                    return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=_monitor, name="magi-esc-cancel", daemon=True)
+    thread.start()
+
+    def _stop() -> None:
+        stop_event.set()
+        thread.join(timeout=0.2)
+
+    return _stop
 
 
 def _print_help() -> None:
@@ -369,7 +439,7 @@ def _print_help() -> None:
     print("  magi runs")
     print("  magi last")
     print("  magi models [show|refresh] [provider|all]")
-    print("  magi clean [20|all]")
+    print("  magi clean [20|all] [--history]")
     print("  magi")
 
 
@@ -383,7 +453,7 @@ def _print_shell_help() -> None:
     print("  /model show      print the current provider/model/effort state")
     print("  /models          show model catalog sources and values")
     print("  /models refresh [provider|all]  refresh model catalogs now")
-    print("  /clean [N|all]   remove old runs; default keeps latest 20")
+    print("  /clean [N|all] [--history]   remove old runs; default keeps latest 20")
     print("  /mode            show current mode")
     print("  /status          show provider and quota placeholders")
     print("  /runs            list saved runs")
