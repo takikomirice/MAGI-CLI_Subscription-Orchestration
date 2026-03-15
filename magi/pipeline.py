@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+import shutil
 import time
 from typing import Callable
 
@@ -40,11 +41,19 @@ def run_request(
     model_overrides = model_overrides or {}
     effort_overrides = effort_overrides or {}
     handoff = None
+    project_plan_markdown = ""
+    effective_synth_provider = synth_provider
+
+    if mode == "agent" and synth_provider:
+        _emit(progress, f"[agent] ignoring synthesizer selection: {synth_provider}")
+        effective_synth_provider = None
 
     _emit(progress, f"[{mode} 1/6] normalizing request")
     if handoff_selector:
         _emit(progress, f"[{mode}] resolving handoff {handoff_selector}")
         handoff = resolve_handoff_context(config.runs_dir, handoff_selector)
+    if mode == "plan":
+        project_plan_markdown = _load_project_plan(config.project_root)
     ensure_dir(run_dir)
 
     write_yaml(
@@ -57,7 +66,7 @@ def run_request(
             "requested_at": datetime.now().isoformat(timespec="seconds"),
             "user_request": user_request,
             "selected_providers": sorted(selected_providers) if selected_providers else [],
-            "synth_provider": synth_provider or "",
+            "synth_provider": effective_synth_provider or "",
             "handoff": handoff.as_dict() if handoff is not None else None,
             "model_overrides": model_overrides,
             "effort_overrides": effort_overrides,
@@ -70,6 +79,7 @@ def run_request(
         config.project_name,
         config.project_root,
         handoff=handoff,
+        project_plan_markdown=project_plan_markdown,
     )
     providers = [
         item
@@ -111,7 +121,7 @@ def run_request(
     synthesis = build_synthesis(results, user_request)
     synthesis["mode"] = mode
     synthesis["selected_providers"] = sorted(selected_providers) if selected_providers else []
-    synthesis["synth_provider"] = synth_provider or ""
+    synthesis["synth_provider"] = effective_synth_provider or ""
     synthesis["handoff"] = handoff.as_dict() if handoff is not None else None
     synthesis["agent_loop"] = agent_loop
     synthesis["model_overrides"] = model_overrides
@@ -121,7 +131,7 @@ def run_request(
 
     _emit(progress, f"[{mode} 6/6] writing report")
     report_path = run_dir / "report.md"
-    synthesizer_path = run_dir / "synthesizer.yaml" if synth_provider else None
+    synthesizer_path = run_dir / "synthesizer.yaml" if effective_synth_provider else None
     report_text = _build_report_text(
         config,
         run_id,
@@ -129,7 +139,7 @@ def run_request(
         user_request,
         results,
         synthesis,
-        synth_provider,
+        effective_synth_provider,
         model_overrides,
         effort_overrides,
         synthesizer_path,
@@ -137,6 +147,14 @@ def run_request(
         cancellation,
     )
     write_text(report_path, report_text)
+    if mode == "plan":
+        _emit(progress, "[plan] updating project plan.md")
+        _write_project_plan(
+            config.project_root,
+            run_id,
+            user_request,
+            report_text,
+        )
 
     return RunArtifacts(
         run_id=run_id,
@@ -145,7 +163,7 @@ def run_request(
         report_path=report_path,
         synthesis_path=synthesis_path,
         advisor_paths=advisor_paths,
-        synthesizer_path=synthesizer_path if synth_provider else None,
+        synthesizer_path=synthesizer_path if effective_synth_provider else None,
     )
 
 
@@ -405,6 +423,54 @@ def _trim_output(text: str, limit: int = 4000) -> str:
 
 def _indent_block(text: str) -> str:
     return "\n".join(f"     {line}" for line in text.splitlines())
+
+
+def _load_project_plan(project_root: Path) -> str:
+    plan_path = project_root / "plan.md"
+    if not plan_path.exists():
+        return ""
+    try:
+        return plan_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _write_project_plan(
+    project_root: Path,
+    run_id: str,
+    user_request: str,
+    report_text: str,
+) -> None:
+    plan_path = project_root / "plan.md"
+    if plan_path.exists():
+        archive_dir = project_root / "plans" / "archive"
+        ensure_dir(archive_dir)
+        archive_name = f"{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-{run_id}-plan.md"
+        shutil.copy2(plan_path, archive_dir / archive_name)
+
+    plan_text = _render_project_plan(run_id, user_request, report_text)
+    write_text(plan_path, plan_text)
+
+
+def _render_project_plan(run_id: str, user_request: str, report_text: str) -> str:
+    body = report_text.strip()
+    return "\n".join(
+        [
+            "# Project Plan",
+            "",
+            f"- updated_at: `{datetime.now().isoformat(timespec='seconds')}`",
+            f"- source_run_id: `{run_id}`",
+            "",
+            "## Request",
+            "",
+            user_request.strip(),
+            "",
+            "## MAGI Plan",
+            "",
+            body,
+            "",
+        ]
+    )
 
 
 def _new_run_id(runs_dir: Path) -> str:

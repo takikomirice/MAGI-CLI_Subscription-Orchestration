@@ -25,6 +25,7 @@ def build_mode_prompt(
     project_name: str,
     project_root: Path,
     handoff: HandoffContext | None = None,
+    project_plan_markdown: str = "",
     retry_feedback: str = "",
 ) -> str:
     prompt_name = MODE_TO_PROMPT.get(mode, "advisor.md")
@@ -35,6 +36,7 @@ def build_mode_prompt(
         project_root=str(project_root),
         mode=mode,
     )
+    prompt += _render_project_plan_block(project_plan_markdown)
     if handoff is None:
         return prompt + _render_retry_feedback(retry_feedback)
     return prompt + _render_handoff_block(handoff) + _render_retry_feedback(retry_feedback)
@@ -84,4 +86,17 @@ def _render_retry_feedback(retry_feedback: str) -> str:
         "<MAGI_VERIFICATION_FEEDBACK>\n"
         f"{retry_feedback.strip()}\n"
         "</MAGI_VERIFICATION_FEEDBACK>\n"
+    )
+
+
+def _render_project_plan_block(project_plan_markdown: str) -> str:
+    if not project_plan_markdown.strip():
+        return ""
+    return (
+        "\n\nCurrent project plan:\n"
+        "- Update this plan carefully instead of discarding it wholesale.\n"
+        "- Preserve still-valid decisions and refine the parts that need to change.\n\n"
+        "<MAGI_PROJECT_PLAN>\n"
+        f"{project_plan_markdown.strip()}\n"
+        "</MAGI_PROJECT_PLAN>\n"
     )

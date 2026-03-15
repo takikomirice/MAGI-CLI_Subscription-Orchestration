@@ -32,6 +32,7 @@ This makes it useful for:
 - file-based run history
 - saved advisor outputs and synthesis reports
 - run handoff from a previous MAGI report into a new request
+- `plan` mode writes and updates `plan.md` in the project root
 - single-provider agent retry loop with local verification commands
 - mode switching with slash commands
 - provider, model, and effort switching from `/model`
@@ -134,9 +135,22 @@ Supported handoff selectors:
 - a run ID such as `2026-03-15-120000-001`
 - a run directory path
 
+## Project Plan File
+
+`plan` mode now treats `plan.md` in the project root as a first-class artifact.
+
+Behavior:
+
+- after each `plan` run, MAGI writes the latest plan to `./plan.md`
+- if `plan.md` already exists, MAGI includes it in the next `plan` prompt so the plan can be refined instead of recreated from scratch
+- before overwriting `plan.md`, MAGI archives the previous version under `./plans/archive/`
+
+This makes MAGI more useful as a planning and handoff tool even when implementation happens in another CLI.
+
 ## Agent Verification Loop
 
 `agent` mode can now run as an execute-and-verify loop when exactly one provider is active.
+It is designed as a single-provider path and ignores synthesizer selection.
 
 Flow:
 
@@ -158,6 +172,18 @@ verification_commands = [
 ```
 
 The loop currently activates only for a single active provider. If multiple providers are active in `agent` mode, MAGI falls back to the existing advisory-style fan-out.
+
+You can select the subscription target explicitly:
+
+```powershell
+python -m magi --mode agent --agent-provider codex --agent-model gpt-5.4 --agent-effort high --handoff last-plan "Implement the approved plan."
+```
+
+Inside the shell:
+
+```text
+/agent codex gpt-5.4 high Implement the approved plan.
+```
 
 ## `/model` Menu
 
@@ -270,7 +296,7 @@ You can still run a single request without opening the shell:
 
 ```powershell
 python -m magi --mode plan --providers codex --models codex=gpt-5.4 --efforts codex=high "Outline the delivery phases for this CLI tool."
-python -m magi --mode agent --handoff last-plan "Implement the approved plan with tests first."
+python -m magi --mode agent --agent-provider codex --agent-model gpt-5.4 --agent-effort high --handoff last-plan "Implement the approved plan with tests first."
 python -m magi --synth-provider gemini "Compare three implementation approaches for a small internal tool."
 ```
 
@@ -413,6 +439,7 @@ Implemented in this MVP:
 - file-based run persistence
 - basic agreement/difference synthesis
 - runtime provider, model, and effort selection
+- project-root `plan.md` generation and update flow
 - single-provider agent verification/retry loop
 - run cleanup commands
 

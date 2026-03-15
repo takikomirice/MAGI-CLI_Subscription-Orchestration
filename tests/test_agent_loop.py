@@ -92,6 +92,26 @@ class AgentLoopTests(unittest.TestCase):
             self.assertFalse((artifacts.run_dir / "agent_attempt_01").exists())
             self.assertNotIn("## Agent Loop", report_text)
 
+    def test_agent_mode_ignores_synth_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            config = load_config(project_root)
+
+            artifacts = run_request(
+                config,
+                "Implement the requested change.",
+                mode="agent",
+                selected_providers={"codex"},
+                synth_provider="gemini",
+            )
+
+            request_text = artifacts.request_path.read_text(encoding="utf-8", errors="replace")
+            report_text = artifacts.report_path.read_text(encoding="utf-8", errors="replace")
+
+            self.assertIsNone(artifacts.synthesizer_path)
+            self.assertIn('synth_provider: ""', request_text)
+            self.assertNotIn("- synthesizer:", report_text)
+
 
 if __name__ == "__main__":
     unittest.main()

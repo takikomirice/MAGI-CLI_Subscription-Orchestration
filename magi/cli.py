@@ -92,6 +92,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Provider to use as the final synthesizer.",
     )
     parser.add_argument(
+        "--agent-provider",
+        default="",
+        help="Single provider to use for agent mode.",
+    )
+    parser.add_argument(
+        "--agent-model",
+        default="",
+        help="Model override for the agent provider.",
+    )
+    parser.add_argument(
+        "--agent-effort",
+        default="",
+        help="Effort override for the agent provider.",
+    )
+    parser.add_argument(
         "--handoff",
         default="",
         help="Reuse a previous MAGI run as prompt context: last, last-plan, run-id, or run path.",
@@ -117,6 +132,22 @@ def main(argv: list[str] | None = None) -> int:
     model_overrides = _parse_assignment_overrides(args.models)
     effort_overrides = _parse_assignment_overrides(args.efforts)
     prompt = " ".join(args.prompt).strip()
+    if args.mode == "agent":
+        try:
+            selected, synth_provider, model_overrides, effort_overrides = _apply_agent_provider_selection(
+                config,
+                selected,
+                synth_provider,
+                model_overrides,
+                effort_overrides,
+                args.agent_provider.strip(),
+                args.agent_model.strip(),
+                args.agent_effort.strip(),
+                print,
+            )
+        except ValueError as exc:
+            print(f"[error] {exc}")
+            return 2
     cancellation = RunCancellation()
     stop_monitor = _start_escape_cancel_monitor(cancellation)
     try:
@@ -266,6 +297,21 @@ def _handle_slash_command(
 
     if command in MODES:
         mode = command
+        if mode == "agent":
+            (
+                payload,
+                selected_providers,
+                synth_provider,
+                model_overrides,
+                effort_overrides,
+            ) = _parse_agent_mode_payload(
+                payload,
+                config,
+                selected_providers,
+                synth_provider,
+                model_overrides,
+                effort_overrides,
+            )
         print(f"mode: {mode}")
         _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
         if payload:
@@ -479,7 +525,7 @@ def _print_help() -> None:
     print("Usage:")
     print('  magi "your request"')
     print('  magi --mode plan "your request"')
-    print('  magi --mode agent --handoff last-plan "implement the approved plan"')
+    print('  magi --mode agent --agent-provider codex --agent-model gpt-5.4 --agent-effort high --handoff last-plan "implement the approved plan"')
     print('  magi --providers codex --models codex=gpt-5.4 --efforts codex=high "your request"')
     print('  magi --synth-provider gemini "your request"')
     print("  magi runs")
@@ -494,7 +540,7 @@ def _print_shell_help() -> None:
     print("  /ask [prompt]    switch to ask mode")
     print("  /plan [prompt]   switch to plan mode")
     print("  /debug [prompt]  switch to debug mode")
-    print("  /agent [prompt]  switch to agent mode")
+    print("  /agent [provider [model [effort]]] [prompt]  switch to single-provider agent mode")
     print("  /handoff [show|off|last|last-plan|RUN_ID|PATH]   manage previous-run prompt context")
     print("  /model           open the provider/model/effort menu")
     print("  /model show      print the current provider/model/effort state")
@@ -527,7 +573,10 @@ def _print_status(
             continue
         resolved_model = model_overrides.get(provider.name) or provider.default_model or "default"
         resolved_effort = effort_overrides.get(provider.name) or provider.default_effort or "default"
-        role = "synth" if provider.name == synth_provider else "advisor"
+        if mode == "agent":
+            role = "agent"
+        else:
+            role = "synth" if provider.name == synth_provider else "advisor"
         detail_parts.append(f"{provider.name}={resolved_model}/{resolved_effort}/{role}")
     detail_text = ", ".join(detail_parts) or "none"
     active_text = ", ".join(sorted(active)) if active else "none"
@@ -682,6 +731,111 @@ def _handle_handoff_command(payload: str, config: AppConfig, current: str | None
     return target
 
 
+def _apply_agent_provider_selection(
+    config: AppConfig,
+    selected_providers: set[str] | None,
+    synth_provider: str | None,
+    model_overrides: dict[str, str],
+    effort_overrides: dict[str, str],
+    provider_name: str,
+    model: str,
+    effort: str,
+    emit=print,
+) -> tuple[set[str] | None, str | None, dict[str, str], dict[str, str]]:
+    enabled_names = {provider.name for provider in config.providers if provider.enabled}
+    next_selected = selected_providers
+    next_synth = None
+    next_models = dict(model_overrides)
+    next_efforts = dict(effort_overrides)
+
+    if synth_provider:
+        emit(f"[agent] ignoring synthesizer selection: {synth_provider}")
+
+    if provider_name:
+        if provider_name not in enabled_names:
+            raise ValueError(f"Unknown provider for agent mode: {provider_name}")
+        next_selected = {provider_name}
+        if model:
+            next_models[provider_name] = model
+        if effort:
+            next_efforts[provider_name] = effort
+        return next_selected, next_synth, next_models, next_efforts
+
+    if selected_providers and len(selected_providers) == 1:
+        return next_selected, next_synth, next_models, next_efforts
+
+    if selected_providers is None and enabled_names:
+        default_provider = "codex" if "codex" in enabled_names else sorted(enabled_names)[0]
+        emit(f"[agent] defaulting to single provider: {default_provider}")
+        return {default_provider}, next_synth, next_models, next_efforts
+
+    return next_selected, next_synth, next_models, next_efforts
+
+
+def _parse_agent_mode_payload(
+    payload: str,
+    config: AppConfig,
+    selected_providers: set[str] | None,
+    synth_provider: str | None,
+    model_overrides: dict[str, str],
+    effort_overrides: dict[str, str],
+) -> tuple[str, set[str] | None, str | None, dict[str, str], dict[str, str]]:
+    enabled_names = {provider.name for provider in config.providers if provider.enabled}
+    if not payload:
+        next_selected, next_synth, next_models, next_efforts = _apply_agent_provider_selection(
+            config,
+            selected_providers,
+            synth_provider,
+            model_overrides,
+            effort_overrides,
+            "",
+            "",
+            "",
+        )
+        return "", next_selected, next_synth, next_models, next_efforts
+
+    parts = payload.split()
+    provider_name = parts[0]
+    if provider_name not in enabled_names:
+        next_selected, next_synth, next_models, next_efforts = _apply_agent_provider_selection(
+            config,
+            selected_providers,
+            synth_provider,
+            model_overrides,
+            effort_overrides,
+            "",
+            "",
+            "",
+        )
+        return payload, next_selected, next_synth, next_models, next_efforts
+
+    provider_config = next(
+        (provider for provider in config.providers if provider.name == provider_name),
+        None,
+    )
+    model = ""
+    effort = ""
+    remaining_start = 1
+    if provider_config is not None and len(parts) > 1 and parts[1] in provider_config.model_options:
+        model = parts[1]
+        remaining_start = 2
+    if provider_config is not None and len(parts) > remaining_start and parts[remaining_start] in provider_config.effort_options:
+        effort = parts[remaining_start]
+        remaining_start += 1
+    remaining_prompt = " ".join(parts[remaining_start:]).strip()
+    next_selected, next_synth, next_models, next_efforts = _apply_agent_provider_selection(
+        config,
+        selected_providers,
+        synth_provider,
+        model_overrides,
+        effort_overrides,
+        provider_name,
+        model,
+        effort,
+    )
+    return remaining_prompt, next_selected, next_synth, next_models, next_efforts
+
+
 def _load_runtime_config(project_root: Path) -> AppConfig:
     config = load_config(project_root)
     auto_refresh_model_catalogs(config)
@@ -696,7 +850,11 @@ def _build_slash_completer():
             "/ask": None,
             "/plan": None,
             "/debug": None,
-            "/agent": None,
+            "/agent": {
+                "codex": None,
+                "claude": None,
+                "gemini": None,
+            },
             "/handoff": {
                 "show": None,
                 "off": None,
