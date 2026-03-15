@@ -74,7 +74,7 @@ Prerequisites:
 Setup:
 
 ```powershell
-git clone <REPOSITORY_URL>
+git clone https://github.com/takikomirice/MAGI-CLI_Subscription-Orchestration
 cd MAGI-CLI_Subscription-Orchestration
 python -m pip install -e .
 ```
