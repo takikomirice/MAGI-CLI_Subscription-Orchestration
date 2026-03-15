@@ -70,6 +70,14 @@ def render_report(run_id: str, synthesis: dict[str, object], results: list[Advis
     synth_error = str(synthesis.get("synth_error") or "").strip()
     if synth_error:
         lines.append(f"- synth_error: {synth_error}")
+    agent_loop = synthesis.get("agent_loop")
+    if isinstance(agent_loop, dict) and agent_loop.get("enabled"):
+        lines.append(f"- agent_attempts: {agent_loop.get('attempts', 0)}/{agent_loop.get('max_attempts', 0)}")
+        if agent_loop.get("verification_configured"):
+            verification_state = "passed" if agent_loop.get("verification_passed") else "failed"
+            lines.append(f"- agent_verification: {verification_state}")
+        else:
+            lines.append("- agent_verification: not configured")
 
     lines.extend(
         [
@@ -126,6 +134,30 @@ def render_report(run_id: str, synthesis: dict[str, object], results: list[Advis
         lines.append(
             f"- {result.provider}: {status}, confidence={result.payload.confidence}, duration={result.duration_seconds:.2f}s"
         )
+
+    if isinstance(agent_loop, dict) and agent_loop.get("enabled"):
+        lines.extend(["", "## Agent Loop", ""])
+        attempts = int(agent_loop.get("attempts", 0))
+        max_attempts = int(agent_loop.get("max_attempts", 0))
+        lines.append(f"- attempts: {attempts}/{max_attempts}")
+        if agent_loop.get("verification_configured"):
+            verification_state = "passed" if agent_loop.get("verification_passed") else "failed"
+            lines.append(f"- verification: {verification_state}")
+            commands = agent_loop.get("verification_commands") or []
+            if commands:
+                lines.append("- commands:")
+                lines.extend(f"  - {' '.join(command)}" for command in commands)
+        else:
+            lines.append("- verification: not configured")
+        failed_attempts = agent_loop.get("failed_attempts") or []
+        if failed_attempts:
+            lines.append("- failed_attempts:")
+            for item in failed_attempts:
+                lines.append(f"  - attempt {item['attempt']}: provider_ok={item['provider_ok']}")
+                for failure in item.get("verification_failures", []):
+                    lines.append(
+                        f"    - {' '.join(failure['command']) or '<empty command>'} -> exit {failure['exit_code']}"
+                    )
 
     return "\n".join(lines).strip() + "\n"
 

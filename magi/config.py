@@ -28,11 +28,19 @@ class ProviderConfig:
 
 
 @dataclass(slots=True)
+class AgentConfig:
+    max_attempts: int = 1
+    verification_commands: list[list[str]] = field(default_factory=list)
+    verification_timeout_seconds: int = 600
+
+
+@dataclass(slots=True)
 class AppConfig:
     project_root: Path
     project_name: str
     runs_dir: Path
     providers: list[ProviderConfig]
+    agent: AgentConfig
 
 
 def load_config(project_root: Path) -> AppConfig:
@@ -46,6 +54,7 @@ def load_config(project_root: Path) -> AppConfig:
     project_name = str(raw.get("project_name") or project_root.name)
     runs_dir = project_root / str(raw.get("runs_dir") or "runs")
     provider_table = raw.get("providers") or {}
+    agent = _agent_from_table(raw.get("agent") or {})
     providers = []
     for name, values in provider_table.items():
         providers.append(_provider_from_table(name, values))
@@ -58,6 +67,7 @@ def load_config(project_root: Path) -> AppConfig:
         project_name=project_name,
         runs_dir=runs_dir,
         providers=providers,
+        agent=agent,
     )
 
 
@@ -100,6 +110,7 @@ def default_config(project_root: Path) -> AppConfig:
         project_name=project_root.name,
         runs_dir=project_root / "runs",
         providers=providers,
+        agent=AgentConfig(),
     )
 
 
@@ -129,4 +140,22 @@ def _provider_from_table(name: str, raw: dict[str, Any]) -> ProviderConfig:
         model_options=model_options,
         default_effort=default_effort,
         effort_options=effort_options,
+    )
+
+
+def _agent_from_table(raw: dict[str, Any]) -> AgentConfig:
+    max_attempts = max(int(raw.get("max_attempts", 1)), 1)
+    timeout_seconds = max(int(raw.get("verification_timeout_seconds", 600)), 1)
+    verification_commands: list[list[str]] = []
+    for entry in raw.get("verification_commands", []):
+        if isinstance(entry, list):
+            command = [str(part) for part in entry if str(part)]
+        else:
+            command = [str(entry)] if str(entry) else []
+        if command:
+            verification_commands.append(command)
+    return AgentConfig(
+        max_attempts=max_attempts,
+        verification_commands=verification_commands,
+        verification_timeout_seconds=timeout_seconds,
     )

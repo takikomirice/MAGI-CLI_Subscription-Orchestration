@@ -31,6 +31,8 @@ This makes it useful for:
 - provider abstraction for external CLIs
 - file-based run history
 - saved advisor outputs and synthesis reports
+- run handoff from a previous MAGI report into a new request
+- single-provider agent retry loop with local verification commands
 - mode switching with slash commands
 - provider, model, and effort switching from `/model`
 - model catalog refresh via `magi models` or `/models`
@@ -72,6 +74,11 @@ MAGI keeps the current mode until you switch it.
 MAGI [ask]> /plan
 mode: plan
 MAGI [plan]> Break this project into an MVP and a second phase.
+MAGI [plan]> /handoff last-plan
+handoff set: last-plan -> run 2026-03-15-120000-001 (plan) [D:\...\report.md]
+MAGI [plan]> /agent
+mode: agent
+MAGI [agent]> Implement the approved plan and keep changes small.
 MAGI [plan]> /model
 MAGI model menu
 Enter: descend/select | Esc: back/exit | Space: toggle provider on/off
@@ -87,6 +94,7 @@ Available slash commands:
 - `/plan`
 - `/debug`
 - `/agent`
+- `/handoff`
 - `/model`
 - `/models`
 - `/clean`
@@ -98,6 +106,58 @@ Available slash commands:
 - `/exit`
 
 The shell currently shows quota placeholders such as `codex: --%` until provider-specific usage parsing is implemented.
+
+## Run Handoff
+
+Use handoff when you want a new request to inherit the synthesized report from an earlier MAGI run, especially for `plan -> agent`.
+
+One-shot example:
+
+```powershell
+python -m magi --mode plan --project-root C:\work\demo "Plan the implementation in phases."
+python -m magi --mode agent --project-root C:\work\demo --handoff last-plan "Implement the approved plan."
+```
+
+Interactive shell:
+
+```text
+MAGI [plan]> Plan the implementation in phases.
+MAGI [plan]> /handoff last-plan
+MAGI [plan]> /agent
+MAGI [agent]> Implement the approved plan.
+```
+
+Supported handoff selectors:
+
+- `last`
+- `last-plan`
+- a run ID such as `2026-03-15-120000-001`
+- a run directory path
+
+## Agent Verification Loop
+
+`agent` mode can now run as an execute-and-verify loop when exactly one provider is active.
+
+Flow:
+
+- MAGI sends the request to the selected provider
+- the provider edits the project and returns its structured JSON summary
+- MAGI runs local verification commands from `.magi.toml`
+- if verification fails, MAGI injects the failing command output into the next `agent` prompt and retries
+
+Configuration:
+
+```toml
+[agent]
+max_attempts = 3
+verification_timeout_seconds = 300
+verification_commands = [
+  ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+  ["python", "-m", "compileall", "magi", "tests"],
+]
+```
+
+The loop currently activates only for a single active provider. If multiple providers are active in `agent` mode, MAGI falls back to the existing advisory-style fan-out.
 
 ## `/model` Menu
 
@@ -210,6 +270,7 @@ You can still run a single request without opening the shell:
 
 ```powershell
 python -m magi --mode plan --providers codex --models codex=gpt-5.4 --efforts codex=high "Outline the delivery phases for this CLI tool."
+python -m magi --mode agent --handoff last-plan "Implement the approved plan with tests first."
 python -m magi --synth-provider gemini "Compare three implementation approaches for a small internal tool."
 ```
 
@@ -352,6 +413,7 @@ Implemented in this MVP:
 - file-based run persistence
 - basic agreement/difference synthesis
 - runtime provider, model, and effort selection
+- single-provider agent verification/retry loop
 - run cleanup commands
 
 Not yet implemented:

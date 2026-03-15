@@ -60,3 +60,65 @@ class RunArtifacts:
     synthesis_path: Path
     advisor_paths: list[Path]
     synthesizer_path: Path | None = None
+
+
+@dataclass(slots=True)
+class HandoffContext:
+    selector: str
+    run_id: str
+    mode: str
+    run_dir: Path
+    report_path: Path
+    report_markdown: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "selector": self.selector,
+            "run_id": self.run_id,
+            "mode": self.mode,
+            "run_dir": str(self.run_dir),
+            "report_path": str(self.report_path),
+        }
+
+
+@dataclass(slots=True)
+class VerificationResult:
+    command: list[str]
+    ok: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    timed_out: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "command": self.command,
+            "ok": self.ok,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "duration_seconds": round(self.duration_seconds, 3),
+            "timed_out": self.timed_out,
+        }
+
+
+@dataclass(slots=True)
+class AgentAttempt:
+    attempt: int
+    prompt: str
+    provider_result: AdvisorResult
+    verification_results: list[VerificationResult] = field(default_factory=list)
+
+    @property
+    def verification_ok(self) -> bool:
+        return bool(self.verification_results) and all(item.ok for item in self.verification_results)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "prompt": self.prompt,
+            "provider_result": self.provider_result.as_dict(),
+            "verification_results": [item.as_dict() for item in self.verification_results],
+            "verification_ok": self.verification_ok,
+        }

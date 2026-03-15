@@ -1,6 +1,14 @@
 project_name = "advisor-orchestrator"
 runs_dir = "runs"
 
+[agent]
+max_attempts = 3
+verification_timeout_seconds = 300
+verification_commands = [
+  ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+  ["python", "-m", "compileall", "magi", "tests"],
+]
+
 [providers.codex]
 type = "cli"
 enabled = true

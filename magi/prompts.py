@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import json
 
+from magi.models import HandoffContext
+
 
 PROMPTS_DIR = Path(__file__).with_name("prompts")
 MODE_TO_PROMPT = {
@@ -22,15 +24,20 @@ def build_mode_prompt(
     user_request: str,
     project_name: str,
     project_root: Path,
+    handoff: HandoffContext | None = None,
+    retry_feedback: str = "",
 ) -> str:
     prompt_name = MODE_TO_PROMPT.get(mode, "advisor.md")
     template = load_prompt(prompt_name)
-    return template.format(
+    prompt = template.format(
         user_request=user_request.strip(),
         project_name=project_name,
         project_root=str(project_root),
         mode=mode,
     )
+    if handoff is None:
+        return prompt + _render_retry_feedback(retry_feedback)
+    return prompt + _render_handoff_block(handoff) + _render_retry_feedback(retry_feedback)
 
 
 def build_synthesis_report_prompt(
@@ -49,4 +56,32 @@ def build_synthesis_report_prompt(
         mode=mode,
         advisor_results_json=json.dumps(advisor_results, ensure_ascii=False, indent=2),
         heuristic_synthesis_json=json.dumps(heuristic_synthesis, ensure_ascii=False, indent=2),
+    )
+
+
+def _render_handoff_block(handoff: HandoffContext) -> str:
+    return (
+        "\n\nPrevious MAGI handoff context:\n"
+        f"- source_selector: {handoff.selector}\n"
+        f"- source_run_id: {handoff.run_id}\n"
+        f"- source_mode: {handoff.mode}\n"
+        f"- source_report_path: {handoff.report_path}\n"
+        "- Treat this prior MAGI report as input context.\n"
+        "- Preserve its constraints and decisions unless the new user request explicitly changes them.\n\n"
+        "<MAGI_HANDOFF_REPORT>\n"
+        f"{handoff.report_markdown}\n"
+        "</MAGI_HANDOFF_REPORT>\n"
+    )
+
+
+def _render_retry_feedback(retry_feedback: str) -> str:
+    if not retry_feedback.strip():
+        return ""
+    return (
+        "\n\nVerification feedback from the previous attempt:\n"
+        "- Fix the failing checks before declaring the work complete.\n"
+        "- Do not repeat the same unchanged implementation if the failures remain relevant.\n\n"
+        "<MAGI_VERIFICATION_FEEDBACK>\n"
+        f"{retry_feedback.strip()}\n"
+        "</MAGI_VERIFICATION_FEEDBACK>\n"
     )

@@ -15,7 +15,7 @@ from magi.model_catalog import (
 )
 from magi.model_menu import open_model_menu
 from magi.pipeline import run_request
-from magi.runs import clean_runs, list_run_dirs
+from magi.runs import clean_runs, list_run_dirs, resolve_handoff_context
 
 try:
     from prompt_toolkit import PromptSession
@@ -40,6 +40,7 @@ SHELL_COMMANDS = {
     "plan",
     "debug",
     "agent",
+    "handoff",
     "model",
     "mode",
     "models",
@@ -91,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Provider to use as the final synthesizer.",
     )
     parser.add_argument(
+        "--handoff",
+        default="",
+        help="Reuse a previous MAGI run as prompt context: last, last-plan, run-id, or run path.",
+    )
+    parser.add_argument(
         "--efforts",
         default="",
         help="Comma-separated provider=effort overrides.",
@@ -107,23 +113,29 @@ def main(argv: list[str] | None = None) -> int:
     config = _load_runtime_config(project_root)
     selected = {item.strip() for item in args.providers.split(",") if item.strip()} or None
     synth_provider = args.synth_provider.strip() or None
+    handoff_selector = args.handoff.strip() or None
     model_overrides = _parse_assignment_overrides(args.models)
     effort_overrides = _parse_assignment_overrides(args.efforts)
     prompt = " ".join(args.prompt).strip()
     cancellation = RunCancellation()
     stop_monitor = _start_escape_cancel_monitor(cancellation)
     try:
-        artifacts = run_request(
-            config,
-            prompt,
-            mode=args.mode,
-            selected_providers=selected,
-            synth_provider=synth_provider,
-            model_overrides=model_overrides,
-            effort_overrides=effort_overrides,
-            progress=print,
-            cancellation=cancellation,
-        )
+        try:
+            artifacts = run_request(
+                config,
+                prompt,
+                mode=args.mode,
+                selected_providers=selected,
+                synth_provider=synth_provider,
+                handoff_selector=handoff_selector,
+                model_overrides=model_overrides,
+                effort_overrides=effort_overrides,
+                progress=print,
+                cancellation=cancellation,
+            )
+        except ValueError as exc:
+            print(f"[error] {exc}")
+            return 2
     finally:
         stop_monitor()
     print(f"[done] report: {artifacts.report_path}")
@@ -143,11 +155,12 @@ def _interactive_shell(project_root: Path) -> int:
     mode = "ask"
     selected_providers: set[str] | None = None
     synth_provider: str | None = None
+    handoff_selector: str | None = None
     model_overrides: dict[str, str] = {}
     effort_overrides: dict[str, str] = {}
     model_catalog_menu_refreshed = False
     session = _build_prompt_session(config.project_root)
-    _print_status(mode, config, selected_providers, synth_provider, model_overrides, effort_overrides)
+    _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
     if PromptSession is None:
         print("history | prompt_toolkit not installed; using basic input() fallback")
     elif session is None:
@@ -172,6 +185,7 @@ def _interactive_shell(project_root: Path) -> int:
                 mode,
                 selected_providers,
                 synth_provider,
+                handoff_selector,
                 model_overrides,
                 effort_overrides,
                 model_catalog_menu_refreshed,
@@ -181,6 +195,7 @@ def _interactive_shell(project_root: Path) -> int:
                 config,
                 selected_providers,
                 synth_provider,
+                handoff_selector,
                 model_overrides,
                 effort_overrides,
                 model_catalog_menu_refreshed,
@@ -189,7 +204,16 @@ def _interactive_shell(project_root: Path) -> int:
                 return 0
             continue
 
-        _run_and_report(config, line, mode, selected_providers, synth_provider, model_overrides, effort_overrides)
+        _run_and_report(
+            config,
+            line,
+            mode,
+            selected_providers,
+            synth_provider,
+            handoff_selector,
+            model_overrides,
+            effort_overrides,
+        )
 
 
 def _build_prompt_session(project_root: Path):
@@ -220,14 +244,15 @@ def _handle_slash_command(
     config: AppConfig,
     selected_providers: set[str] | None,
     synth_provider: str | None,
+    handoff_selector: str | None,
     model_overrides: dict[str, str],
     effort_overrides: dict[str, str],
     model_catalog_menu_refreshed: bool,
-) -> tuple[bool, str, set[str] | None, str | None, dict[str, str], dict[str, str], bool]:
+) -> tuple[bool, str, set[str] | None, str | None, str | None, dict[str, str], dict[str, str], bool]:
     command_text = line[1:].strip()
     if not command_text:
         print("Empty slash command. Try /help.")
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
     if " " in command_text:
         command, payload = command_text.split(" ", 1)
@@ -237,15 +262,29 @@ def _handle_slash_command(
 
     if command not in SHELL_COMMANDS:
         print(f"Unknown slash command: /{command}")
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
     if command in MODES:
         mode = command
         print(f"mode: {mode}")
-        _print_status(mode, config, selected_providers, synth_provider, model_overrides, effort_overrides)
+        _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
         if payload:
-            _run_and_report(config, payload, mode, selected_providers, synth_provider, model_overrides, effort_overrides)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+            _run_and_report(
+                config,
+                payload,
+                mode,
+                selected_providers,
+                synth_provider,
+                handoff_selector,
+                model_overrides,
+                effort_overrides,
+            )
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
+
+    if command == "handoff":
+        handoff_selector = _handle_handoff_command(payload, config, handoff_selector)
+        _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
     if command == "model":
         selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed = _handle_model_command(
@@ -257,35 +296,35 @@ def _handle_slash_command(
             effort_overrides,
             model_catalog_menu_refreshed,
         )
-        _print_status(mode, config, selected_providers, synth_provider, model_overrides, effort_overrides)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "models":
         _handle_models_command(payload, config)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
     if command == "clean":
         _clean_runs_for_config(config, payload)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "mode":
         print(f"mode: {mode}")
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "status":
-        _print_status(mode, config, selected_providers, synth_provider, model_overrides, effort_overrides)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        _print_status(mode, config, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides)
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "runs":
         _list_runs(config.project_root)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "last":
         _show_last(config.project_root)
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command == "help":
         _print_shell_help()
-        return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
     if command in {"exit", "quit"}:
         print("bye")
-        return True, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+        return True, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
-    return False, mode, selected_providers, synth_provider, model_overrides, effort_overrides, model_catalog_menu_refreshed
+    return False, mode, selected_providers, synth_provider, handoff_selector, model_overrides, effort_overrides, model_catalog_menu_refreshed
 
 
 def _run_and_report(
@@ -294,6 +333,7 @@ def _run_and_report(
     mode: str,
     selected_providers: set[str] | None,
     synth_provider: str | None,
+    handoff_selector: str | None,
     model_overrides: dict[str, str],
     effort_overrides: dict[str, str],
 ) -> None:
@@ -303,17 +343,22 @@ def _run_and_report(
     cancellation = RunCancellation()
     stop_monitor = _start_escape_cancel_monitor(cancellation)
     try:
-        artifacts = run_request(
-            config,
-            prompt,
-            mode=mode,
-            selected_providers=selected_providers,
-            synth_provider=synth_provider,
-            model_overrides=model_overrides,
-            effort_overrides=effort_overrides,
-            progress=print,
-            cancellation=cancellation,
-        )
+        try:
+            artifacts = run_request(
+                config,
+                prompt,
+                mode=mode,
+                selected_providers=selected_providers,
+                synth_provider=synth_provider,
+                handoff_selector=handoff_selector,
+                model_overrides=model_overrides,
+                effort_overrides=effort_overrides,
+                progress=print,
+                cancellation=cancellation,
+            )
+        except ValueError as exc:
+            print(f"[error] {exc}")
+            return
     finally:
         stop_monitor()
     print(f"[done] report: {artifacts.report_path}")
@@ -434,6 +479,7 @@ def _print_help() -> None:
     print("Usage:")
     print('  magi "your request"')
     print('  magi --mode plan "your request"')
+    print('  magi --mode agent --handoff last-plan "implement the approved plan"')
     print('  magi --providers codex --models codex=gpt-5.4 --efforts codex=high "your request"')
     print('  magi --synth-provider gemini "your request"')
     print("  magi runs")
@@ -449,6 +495,7 @@ def _print_shell_help() -> None:
     print("  /plan [prompt]   switch to plan mode")
     print("  /debug [prompt]  switch to debug mode")
     print("  /agent [prompt]  switch to agent mode")
+    print("  /handoff [show|off|last|last-plan|RUN_ID|PATH]   manage previous-run prompt context")
     print("  /model           open the provider/model/effort menu")
     print("  /model show      print the current provider/model/effort state")
     print("  /models          show model catalog sources and values")
@@ -467,6 +514,7 @@ def _print_status(
     config: AppConfig,
     selected_providers: set[str] | None,
     synth_provider: str | None,
+    handoff_selector: str | None,
     model_overrides: dict[str, str],
     effort_overrides: dict[str, str],
 ) -> None:
@@ -483,7 +531,8 @@ def _print_status(
         detail_parts.append(f"{provider.name}={resolved_model}/{resolved_effort}/{role}")
     detail_text = ", ".join(detail_parts) or "none"
     active_text = ", ".join(sorted(active)) if active else "none"
-    print(f"status | mode: {mode} | active: {active_text} | models: {detail_text} | quota {quota}")
+    handoff_text = handoff_selector or "off"
+    print(f"status | mode: {mode} | active: {active_text} | handoff: {handoff_text} | models: {detail_text} | quota {quota}")
 
 
 def _handle_model_command(
@@ -599,6 +648,40 @@ def _handle_models_command(payload: str, config: AppConfig) -> None:
     print(describe_model_catalogs(config))
 
 
+def _handle_handoff_command(payload: str, config: AppConfig, current: str | None) -> str | None:
+    target = payload.strip() or "show"
+    if target == "show":
+        if not current:
+            print("handoff: off")
+            return current
+        try:
+            handoff = resolve_handoff_context(config.runs_dir, current)
+        except ValueError as exc:
+            print(f"handoff: {current} (unresolved: {exc})")
+            return current
+        print(
+            "handoff: "
+            f"{current} -> run {handoff.run_id} ({handoff.mode}) [{handoff.report_path}]"
+        )
+        return current
+
+    if target in {"off", "none", "clear", "reset"}:
+        print("handoff: off")
+        return None
+
+    try:
+        handoff = resolve_handoff_context(config.runs_dir, target)
+    except ValueError as exc:
+        print(f"handoff error: {exc}")
+        return current
+
+    print(
+        "handoff set: "
+        f"{target} -> run {handoff.run_id} ({handoff.mode}) [{handoff.report_path}]"
+    )
+    return target
+
+
 def _load_runtime_config(project_root: Path) -> AppConfig:
     config = load_config(project_root)
     auto_refresh_model_catalogs(config)
@@ -614,6 +697,12 @@ def _build_slash_completer():
             "/plan": None,
             "/debug": None,
             "/agent": None,
+            "/handoff": {
+                "show": None,
+                "off": None,
+                "last": None,
+                "last-plan": None,
+            },
             "/model": {
                 "show": None,
                 "all": None,
