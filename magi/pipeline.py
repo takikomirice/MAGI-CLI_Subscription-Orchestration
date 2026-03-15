@@ -153,7 +153,7 @@ def run_request(
             config.project_root,
             run_id,
             user_request,
-            report_text,
+            results,
         )
 
     return RunArtifacts(
@@ -439,7 +439,7 @@ def _write_project_plan(
     project_root: Path,
     run_id: str,
     user_request: str,
-    report_text: str,
+    results: list[AdvisorResult],
 ) -> None:
     plan_path = project_root / "plan.md"
     if plan_path.exists():
@@ -448,29 +448,128 @@ def _write_project_plan(
         archive_name = f"{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-{run_id}-plan.md"
         shutil.copy2(plan_path, archive_dir / archive_name)
 
-    plan_text = _render_project_plan(run_id, user_request, report_text)
+    plan_text = _select_plan_markdown(run_id, user_request, results)
     write_text(plan_path, plan_text)
 
 
-def _render_project_plan(run_id: str, user_request: str, report_text: str) -> str:
-    body = report_text.strip()
-    return "\n".join(
+def _select_plan_markdown(
+    run_id: str,
+    user_request: str,
+    results: list[AdvisorResult],
+) -> str:
+    successful = [result for result in results if result.ok and result.payload.plan_markdown.strip()]
+    if successful:
+        chosen = max(successful, key=lambda item: item.payload.confidence)
+        candidate = chosen.payload.plan_markdown.strip()
+        if _validate_plan_markdown(candidate):
+            return candidate + ("\n" if not candidate.endswith("\n") else "")
+    return _build_fallback_plan_markdown(run_id, user_request, results)
+
+
+def _validate_plan_markdown(plan_markdown: str) -> bool:
+    required_sections = [
+        "# Plan:",
+        "## Objective",
+        "## Background",
+        "## Tasks",
+        "## Open Questions",
+        "## Out of Scope",
+    ]
+    if any(section not in plan_markdown for section in required_sections):
+        return False
+
+    banned_phrases = [
+        "適宜",
+        "必要に応じて",
+        "うまく",
+        "柔軟に",
+        "場合によっては",
+        "as appropriate",
+        "if needed",
+        "properly",
+        "correctly",
+        "various",
+        "etc.",
+        "TBD",
+        "TBA",
+    ]
+    lowered = plan_markdown.lower()
+    for phrase in banned_phrases:
+        if phrase.lower() in lowered:
+            return False
+    return True
+
+
+def _build_fallback_plan_markdown(
+    run_id: str,
+    user_request: str,
+    results: list[AdvisorResult],
+) -> str:
+    successful = [result for result in results if result.ok]
+    chosen = max(successful, key=lambda item: item.payload.confidence) if successful else None
+    summary = (
+        chosen.payload.summary
+        if chosen is not None and chosen.payload.summary
+        else f"{user_request.strip()} を段階的に進める。"
+    )
+    approach_items = chosen.payload.approach if chosen is not None and chosen.payload.approach else [user_request.strip()]
+    unknowns = chosen.payload.unknowns if chosen is not None and chosen.payload.unknowns else ["None identified."]
+    out_of_scope = ["実装の詳細なコード変更はこの計画書では確定しない。"]
+
+    lines = [
+        f"# Plan: MAGI 計画 {run_id}",
+        "",
+        "## Objective",
+        summary,
+        "",
+        "## Background",
+        f"- 対象リクエスト: {user_request.strip()}",
+        "- この計画は MAGI の plan モードで生成された。",
+        "- provider ごとの差異は report.md と advisor YAML に残る。",
+        "",
+        "## Tasks",
+        "",
+    ]
+
+    for index, item in enumerate(approach_items, start=1):
+        lines.extend(
+            [
+                f"### Task {index}: 実装タスク {index} を整理する",
+                "",
+                f"**Scope**: {item}",
+                "",
+                "**Non-goals**:",
+                "- このタスクに直接関係しないモジュールの拡張は行わない。",
+                "",
+                "**Files**:",
+                "- `relative/path/to/file` — 対象ファイルは追加調査で確定する。",
+                "",
+                "**Risks**:",
+                "- 対象ファイルが未確定のままだと手戻りが出る。Mitigation: 着手前に影響範囲を一覧化する。",
+                "",
+                "**Done when**:",
+                f"- [ ] Task {index} の対象ファイルと変更方針が確定している。",
+                f"- [ ] Task {index} の検証方法が記述されている。",
+                "",
+                "**Suggested provider**: `codex` — 実装着手前の構成整理と複数ファイルの見通し確認に向いているため。",
+                "",
+                "**Handoff prompt**:",
+                f"> Task {index} の対象ファイルを特定し、変更方針と検証方法を明記してください。制約: 影響範囲外の変更は行わず、対象ファイルは相対パスで列挙してください。完了条件: 対象ファイル一覧と検証方法が揃っていること。",
+                "",
+            ]
+        )
+
+    lines.extend(
         [
-            "# Project Plan",
+            "## Open Questions",
+            *([f"- {item}" for item in unknowns] if unknowns != ["None identified."] else ["- None identified."]),
             "",
-            f"- updated_at: `{datetime.now().isoformat(timespec='seconds')}`",
-            f"- source_run_id: `{run_id}`",
-            "",
-            "## Request",
-            "",
-            user_request.strip(),
-            "",
-            "## MAGI Plan",
-            "",
-            body,
+            "## Out of Scope",
+            *[f"- {item}" for item in out_of_scope],
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def _new_run_id(runs_dir: Path) -> str:

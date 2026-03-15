@@ -35,6 +35,7 @@ def build_mode_prompt(
         project_name=project_name,
         project_root=str(project_root),
         mode=mode,
+        plan_format_rules=load_prompt("plan_format.md") if mode == "plan" else "",
     )
     prompt += _render_project_plan_block(project_plan_markdown)
     if handoff is None:

@@ -136,9 +136,10 @@ MAGI [agent]> 承認した計画に沿って実装して
 
 挙動:
 
-- `plan` 実行後に最新の計画を `./plan.md` に書き出す
+- `plan` 実行後に最新の日本語の実装計画を `./plan.md` に書き出す
 - すでに `plan.md` がある場合は、その内容を次の `plan` prompt に自動で含めて、計画を育てる形にする
 - 上書き前の `plan.md` は `./plans/archive/` に退避する
+- 最終 `plan.md` は [`magi/prompts/plan_format.md`](magi/prompts/plan_format.md) の簡易契約と [`docs/plan-style-guide.md`](docs/plan-style-guide.md) の詳細ルールに従う
 
 これで、実装を別 CLI に任せる前提でも、MAGI を「計画の司令塔」として使いやすくなります。
 

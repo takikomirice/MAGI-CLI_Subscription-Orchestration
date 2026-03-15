@@ -141,9 +141,10 @@ Supported handoff selectors:
 
 Behavior:
 
-- after each `plan` run, MAGI writes the latest plan to `./plan.md`
+- after each `plan` run, MAGI writes the latest Japanese implementation plan to `./plan.md`
 - if `plan.md` already exists, MAGI includes it in the next `plan` prompt so the plan can be refined instead of recreated from scratch
 - before overwriting `plan.md`, MAGI archives the previous version under `./plans/archive/`
+- the final `plan.md` follows the plan format contract in [`magi/prompts/plan_format.md`](magi/prompts/plan_format.md) and the fuller style guide in [`docs/plan-style-guide.md`](docs/plan-style-guide.md)
 
 This makes MAGI more useful as a planning and handoff tool even when implementation happens in another CLI.
 

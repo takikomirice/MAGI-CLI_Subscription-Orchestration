@@ -25,10 +25,14 @@ class PlanFileTests(unittest.TestCase):
             plan_text = plan_path.read_text(encoding="utf-8", errors="replace")
 
             self.assertTrue(plan_path.exists())
-            self.assertIn("# Project Plan", plan_text)
-            self.assertIn(f"source_run_id: `{artifacts.run_id}`", plan_text)
-            self.assertIn("## MAGI Plan", plan_text)
-            self.assertIn("# MAGI Report", plan_text)
+            self.assertTrue(plan_text.startswith("# Plan:"))
+            self.assertIn("## Objective", plan_text)
+            self.assertIn("## Background", plan_text)
+            self.assertIn("## Tasks", plan_text)
+            self.assertIn("## Open Questions", plan_text)
+            self.assertIn("## Out of Scope", plan_text)
+            self.assertNotIn("# MAGI Report", plan_text)
+            self.assertIn("実装計画", plan_text)
 
     def test_plan_mode_archives_previous_plan_and_reuses_it_as_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,6 +61,22 @@ class PlanFileTests(unittest.TestCase):
             self.assertTrue(any(archive_dir.iterdir()))
             self.assertIn("<MAGI_PROJECT_PLAN>", prompt_text)
             self.assertIn(original_plan.splitlines()[0], prompt_text)
+
+    def test_plan_prompt_includes_japanese_output_requirement_and_format_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp)
+            config = load_config(project_root)
+
+            artifacts = run_request(
+                config,
+                "Create a detailed implementation plan.",
+                mode="plan",
+                selected_providers={"codex"},
+            )
+
+            advisor_text = artifacts.advisor_paths[0].read_text(encoding="utf-8", errors="replace")
+            self.assertIn("plan_markdown", advisor_text)
+            self.assertIn("# Plan:", advisor_text)
 
 
 if __name__ == "__main__":

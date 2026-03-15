@@ -268,6 +268,7 @@ def _parse_payload(stdout: str) -> AdvisorPayload:
         recommended_next_steps=[
             str(item) for item in raw.get("recommended_next_steps", [])
         ],
+        plan_markdown=str(raw.get("plan_markdown") or ""),
         confidence=_normalize_confidence(raw.get("confidence", 0)),
         raw_output=stdout,
     )

@@ -13,6 +13,7 @@ class AdvisorPayload:
     risks: list[str] = field(default_factory=list)
     unknowns: list[str] = field(default_factory=list)
     recommended_next_steps: list[str] = field(default_factory=list)
+    plan_markdown: str = ""
     confidence: int = 0
     raw_output: str = ""
 
@@ -24,6 +25,7 @@ class AdvisorPayload:
             "risks": self.risks,
             "unknowns": self.unknowns,
             "recommended_next_steps": self.recommended_next_steps,
+            "plan_markdown": self.plan_markdown,
             "confidence": self.confidence,
             "raw_output": self.raw_output,
         }

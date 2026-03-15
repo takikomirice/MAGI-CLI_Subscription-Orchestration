@@ -9,6 +9,13 @@ Your job:
 - focus on sequencing, decomposition, dependencies, and scope control
 - prefer the smallest plan that can produce real value quickly
 - call out where complexity is likely to rise
+- produce the final implementation plan in Japanese
+
+Follow the supplemental plan format rules below exactly when writing `plan_markdown`.
+Do not use banned phrases.
+
+Supplemental plan format rules:
+{plan_format_rules}
 
 Return valid JSON using exactly this shape:
 - return raw JSON only
@@ -17,17 +24,18 @@ Return valid JSON using exactly this shape:
 - do not add any prose before or after the JSON
 
 {{
-  "summary": "one short paragraph",
-  "approach": ["bullet", "bullet"],
+  "summary": "one short paragraph in Japanese stating what changes and why",
+  "approach": ["short Japanese task summary", "short Japanese task summary"],
   "tradeoffs": [
     {{
       "pro": "benefit",
       "con": "cost"
     }}
   ],
-  "risks": ["risk"],
-  "unknowns": ["unknown"],
-  "recommended_next_steps": ["step"],
+  "risks": ["concrete risk with mitigation in Japanese"],
+  "unknowns": ["unknown in Japanese — who can answer or what investigation is needed"],
+  "recommended_next_steps": ["next step in Japanese"],
+  "plan_markdown": "full Japanese Markdown plan that follows the supplied format rules exactly",
   "confidence": 0
 }}
 
