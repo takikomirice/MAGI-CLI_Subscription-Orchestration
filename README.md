@@ -58,6 +58,49 @@ magi "Review the initial architecture for this project."
 
 By default, MAGI uses mock providers named `codex`, `claude`, and `gemini`, and writes artifacts to `runs/`.
 
+## Install On Your PC
+
+MAGI itself is a Python package. The AI CLIs it orchestrates are separate tools that must also be installed on the target machine.
+
+Prerequisites:
+
+- Python 3.11+
+- `git`
+- the external CLIs you want to use, installed separately
+  - `codex`
+  - `claude`
+  - `gemini`
+
+Setup:
+
+```powershell
+git clone <REPOSITORY_URL>
+cd MAGI-CLI_Subscription-Orchestration
+python -m pip install -e .
+```
+
+Verify the install:
+
+```powershell
+magi --help
+python -m unittest discover -s tests -v
+python -m compileall magi tests docs
+```
+
+Then authenticate each external CLI on that machine using its normal login flow.
+
+If needed, adjust `.magi.toml` for the local machine:
+
+- the exact command name for each CLI
+- whether the CLI needs `stdin_prompt = true`
+- model and effort flags supported by the installed version
+
+First real run:
+
+```powershell
+magi --mode plan "Create the next implementation plan for this project."
+```
+
 ## Interactive Mode
 
 Start the shell:

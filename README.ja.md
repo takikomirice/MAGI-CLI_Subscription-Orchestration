@@ -53,6 +53,49 @@ magi "このプロジェクトの初期構成をレビューして"
 
 デフォルトでは `codex`、`claude`、`gemini` という名前の mock provider を使い、出力は `runs/` に保存されます。
 
+## 導入
+
+MAGI 自体は Python パッケージです。連携する AI CLI は別ツールなので、対象PCにそれぞれ入れておく必要があります。
+
+前提:
+
+- Python 3.11 以上
+- `git`
+- 使いたい外部 CLI を個別にインストール済み
+  - `codex`
+  - `claude`
+  - `gemini`
+
+導入手順:
+
+```powershell
+git clone <REPOSITORY_URL>
+cd MAGI-CLI_Subscription-Orchestration
+python -m pip install -e .
+```
+
+導入確認:
+
+```powershell
+magi --help
+python -m unittest discover -s tests -v
+python -m compileall magi tests docs
+```
+
+その後、各 CLI はそのPC上で通常どおりログイン / 認証してください。
+
+必要なら `.magi.toml` をそのPC向けに調整します:
+
+- 各 CLI の正確なコマンド名
+- `stdin_prompt = true` が必要かどうか
+- インストール済みバージョンで使える model / effort 指定
+
+最初の実行例:
+
+```powershell
+magi --mode plan "このプロジェクトの次の実装計画を作って"
+```
+
 ## 対話モード
 
 シェルを起動:
